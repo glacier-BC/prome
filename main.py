@@ -3,6 +3,7 @@ import os
 import json
 import string
 import subprocess  # 保留用于其他功能
+import shutil  # 用于复制文件
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                            QLineEdit, QPushButton, QScrollArea, QLabel, QFileDialog,
                            QColorDialog, QFormLayout, QProgressBar, QComboBox,
@@ -20,6 +21,54 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 import urllib.request
+
+# 获取应用程序的基础路径
+def get_base_path():
+    """获取应用程序的基础路径，兼容开发环境和打包后的环境"""
+    if getattr(sys, 'frozen', False):
+        # 如果应用被打包
+        return os.path.dirname(sys.executable)
+    else:
+        # 开发环境
+        return os.path.dirname(os.path.abspath(__file__))
+
+# 获取设置文件路径
+def get_settings_path():
+    """获取设置文件的完整路径"""
+    base_dir = get_base_path()
+    settings_dir = os.path.join(base_dir, 'settings')
+
+    # 确保设置目录存在
+    if not os.path.exists(settings_dir):
+        try:
+            os.makedirs(settings_dir)
+        except Exception:
+            # 如果无法创建目录，则使用基础目录
+            settings_dir = base_dir
+
+    return os.path.join(settings_dir, 'settings.json')
+
+# 获取设置图片目录
+def get_settings_images_path():
+    """获取设置图片的目录路径"""
+    base_dir = get_base_path()
+    images_dir = os.path.join(base_dir, 'settings', 'images')
+
+    # 确保图片目录存在
+    if not os.path.exists(images_dir):
+        try:
+            os.makedirs(images_dir)
+        except Exception:
+            # 如果无法创建目录，则使用设置目录
+            images_dir = os.path.join(base_dir, 'settings')
+            if not os.path.exists(images_dir):
+                try:
+                    os.makedirs(images_dir)
+                except Exception:
+                    # 如果仍然无法创建，则使用基础目录
+                    images_dir = base_dir
+
+    return images_dir
 
 # 浏览器检测函数 - 保留但不再用于爬虫
 def detect_browsers():
@@ -143,6 +192,8 @@ class MediaScanner(QThread):
                 return
         except PermissionError:
             pass  # Skip directories we don't have permission to access
+        except Exception as e:
+            print(f"扫描目录时出错: {str(e)}")
 
 # 文档扫描线程
 class DocumentScanner(QThread):
@@ -196,6 +247,8 @@ class DocumentScanner(QThread):
                 return
         except PermissionError:
             pass  # Skip directories we don't have permission to access
+        except Exception as e:
+            print(f"扫描文档时出错: {str(e)}")
 
 # 文件搜索线程
 class FileSearchThread(QThread):
@@ -234,6 +287,8 @@ class FileSearchThread(QThread):
                     self.search_directory(entry.path, current_depth + 1, max_depth)
         except PermissionError:
             pass  # Skip directories we don't have permission to access
+        except Exception as e:
+            print(f"搜索文件时出错: {str(e)}")
 
     def cancel(self):
         self.is_cancelled = True
@@ -1196,7 +1251,6 @@ class FileSearchPage(QWidget):
         self.file_details_window.show()
 
 # 爬虫页面
-# 爬虫页面
 class CrawlerPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1540,6 +1594,17 @@ class SettingsPage(QWidget):
         self.background_button.clicked.connect(self.choose_background)
         layout.addRow("背景图片:", self.background_button)
 
+        self.remove_background_button = QPushButton("移除背景图片")
+        self.remove_background_button.setStyleSheet("""
+            background-color: #F44336;
+            color: white;
+            padding: 5px 15px;
+            border: none;
+            border-radius: 4px;
+        """)
+        self.remove_background_button.clicked.connect(self.remove_background)
+        layout.addRow("", self.remove_background_button)
+
         self.save_button = QPushButton("保存设置")
         self.save_button.setStyleSheet("""
             background-color: #2196F3;
@@ -1582,16 +1647,64 @@ class SettingsPage(QWidget):
             "图片文件 (*.jpg *.jpeg *.png *.bmp)"
         )
         if file_name:
-            self.parent.background_image = file_name
-            self.parent.apply_theme()
-            self.parent.save_settings()
-            self.show_current_settings()
+            try:
+                # 获取图片目录
+                images_dir = get_settings_images_path()
+
+                # 生成目标文件名（使用原始文件名，但确保唯一性）
+                base_name = os.path.basename(file_name)
+                target_file = os.path.join(images_dir, base_name)
+
+                # 如果文件已存在，添加数字后缀
+                counter = 1
+                name, ext = os.path.splitext(base_name)
+                while os.path.exists(target_file):
+                    target_file = os.path.join(images_dir, f"{name}_{counter}{ext}")
+                    counter += 1
+
+                # 复制文件
+                shutil.copy2(file_name, target_file)
+
+                # 输出调试信息
+                print(f"背景图片已复制到: {target_file}")
+
+                # 更新背景图片路径为复制后的路径
+                self.parent.background_image = target_file
+                self.parent.apply_theme()
+                self.parent.save_settings()
+                self.show_current_settings()
+
+                # 显示成功消息并包含完整路径
+                QMessageBox.information(self, "成功", f"背景图片已设置并保存到:\n{target_file}")
+
+                # 强制刷新主题以确保背景正确显示
+                self.parent.force_refresh_theme()
+
+            except Exception as e:
+                QMessageBox.warning(self, "错误", f"设置背景图片时出错: {str(e)}")
+                print(f"设置背景图片时出错: {str(e)}")
+
+    def remove_background(self):
+        if hasattr(self.parent, 'background_image') and self.parent.background_image:
+            reply = QMessageBox.question(self, '确认', '确定要移除背景图片吗？',
+                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                        QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
+                # 不删除文件，只移除引用
+                self.parent.background_image = None
+                self.parent.apply_theme()
+                self.parent.save_settings()
+                self.show_current_settings()
+                QMessageBox.information(self, "成功", "背景图片已移除")
+        else:
+            QMessageBox.information(self, "提示", "当前没有设置背景图片")
 
     def save_settings(self):
         self.parent.browser = self.browser_combo.currentText()
         self.parent.browser_path = self.browser_path_input.text() if self.browser_path_input.text() else None
         self.parent.save_settings()
-        self.parent.show_status("设置已保存")
+        QMessageBox.information(self, "成功", "设置已保存")
+        self.show_current_settings()
 
 # 主窗口
 class MainWindow(QMainWindow):
@@ -1628,6 +1741,22 @@ class MainWindow(QMainWindow):
 
         self.apply_theme()
 
+    def force_refresh_theme(self):
+        """强制刷新主题，确保背景图片正确显示"""
+        # 保存当前背景图片路径
+        current_bg = self.background_image
+
+        # 临时移除背景图片
+        self.background_image = None
+        self.apply_theme()
+
+        # 重新应用背景图片
+        self.background_image = current_bg
+        self.apply_theme()
+
+        # 更新布局以确保变更生效
+        self.centralWidget().layout().update()
+
     def switch_page(self, index):
         self.stacked_widget.setCurrentIndex(index)
         if index == 3:  # Media page
@@ -1654,8 +1783,10 @@ class MainWindow(QMainWindow):
 
         background_style = ""
         if self.background_image and os.path.exists(self.background_image):
+            # 将反斜杠转换为正斜杠，确保Qt样式表正确解析路径
+            qt_style_path = self.background_image.replace('\\', '/')
             background_style = f"""
-                background-image: url({self.background_image});
+                background-image: url("{qt_style_path}");
                 background-position: center;
                 background-repeat: no-repeat;
                 background-attachment: fixed;
@@ -1707,15 +1838,25 @@ class MainWindow(QMainWindow):
         self.crawler_page.show_status(message)
 
     def load_settings(self):
-        if os.path.exists('pythonProject/settings.json'):
-            with open('pythonProject/settings.json', 'r') as f:
-                settings = json.load(f)
-                self.theme_color = QColor(settings.get('theme_color', '#F0F0F0'))
-                self.download_directory = settings.get('download_directory', os.path.expanduser("~/Downloads"))
-                self.browser = settings.get('browser', 'Chrome')
-                self.browser_path = settings.get('browser_path', None)
-                self.background_image = settings.get('background_image', None)
-        else:
+        try:
+            settings_path = get_settings_path()
+            if os.path.exists(settings_path):
+                with open(settings_path, 'r') as f:
+                    settings = json.load(f)
+                    self.theme_color = QColor(settings.get('theme_color', '#F0F0F0'))
+                    self.download_directory = settings.get('download_directory', os.path.expanduser("~/Downloads"))
+                    self.browser = settings.get('browser', 'Chrome')
+                    self.browser_path = settings.get('browser_path', None)
+                    self.background_image = settings.get('background_image', None)
+            else:
+                self.theme_color = QColor(240, 240, 240)
+                self.download_directory = os.path.expanduser("~/Downloads")
+                self.browser = 'Chrome'
+                self.browser_path = None
+                self.background_image = None
+        except Exception as e:
+            print(f"加载设置时出错: {str(e)}")
+            # 使用默认设置
             self.theme_color = QColor(240, 240, 240)
             self.download_directory = os.path.expanduser("~/Downloads")
             self.browser = 'Chrome'
@@ -1723,21 +1864,35 @@ class MainWindow(QMainWindow):
             self.background_image = None
 
     def save_settings(self):
-        settings = {
-            'theme_color': self.theme_color.name(),
-            'download_directory': self.download_directory,
-            'browser': self.browser,
-            'browser_path': self.browser_path,
-            'background_image': self.background_image
-        }
-        with open('pythonProject/settings.json', 'w') as f:
-            json.dump(settings, f)
+        try:
+            settings = {
+                'theme_color': self.theme_color.name(),
+                'download_directory': self.download_directory,
+                'browser': self.browser,
+                'browser_path': self.browser_path,
+                'background_image': self.background_image
+            }
+
+            settings_path = get_settings_path()
+            with open(settings_path, 'w') as f:
+                json.dump(settings, f)
+        except Exception as e:
+            print(f"保存设置时出错: {str(e)}")
+            self.show_status(f"保存设置失败: {str(e)}")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
 
     # 设置应用程序图标
-    app.setWindowIcon(QIcon("app_icon.ico"))  # 替换为您的图标文件路径
+    try:
+        app_icon_path = os.path.join(get_base_path(), "app_icon.ico")
+        if os.path.exists(app_icon_path):
+            app.setWindowIcon(QIcon(app_icon_path))
+        else:
+            # 如果图标文件不存在，使用默认图标
+            pass
+    except Exception as e:
+        print(f"设置应用图标时出错: {str(e)}")
 
     window = MainWindow()
     window.show()
